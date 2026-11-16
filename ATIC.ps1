@@ -1,21 +1,24 @@
 # ============ CONFIGURACION INTERACTIVA ============
 Write-Host "===============================================" -ForegroundColor Cyan
-Write-Host "     ATIC WORD SANITIZER - CONFIGURACION" -ForegroundColor Cyan
+Write-Host "   ATIC WORD SANITIZER - MODO UNIDAD COMPLETA" -ForegroundColor Cyan
 Write-Host "===============================================" -ForegroundColor Cyan
 
-$carpetaOrigen = Read-Host "Ingrese la ruta de la carpeta de ORIGEN (donde estan los archivos)"
-if (-not (Test-Path -LiteralPath $carpetaOrigen -PathType Container)) {
-    throw "La carpeta de origen especificada no existe o no es una ruta valida."
+$unidadOrigen = Read-Host "Ingrese la letra de la unidad o ruta base a revisar (Ej: D: o D:\MiCarpeta)"
+if (-not (Test-Path -LiteralPath $unidadOrigen -PathType Container)) {
+    throw "La unidad o ruta especificada no existe o no es valida."
 }
 
-# Obtener automáticamente el nombre de la carpeta de origen para crear la de destino por defecto
-$nombreOrigen = Split-Path $carpetaOrigen -Leaf
-$padreOrigen = Split-Path $carpetaOrigen -Parent
-$sugerenciaDestino = Join-Path $padreOrigen ($nombreOrigen + "_limpio")
+# Limpiar formato de la unidad/ruta base
+$sourceFull = (Get-Item -LiteralPath $unidadOrigen).FullName.TrimEnd('\') + '\'
 
-Write-Host "Carpeta de destino sugerida: $sugerenciaDestino" -ForegroundColor Yellow
-$customDestino = Read-Host "Presione ENTER para usar esta sugerencia o escriba otra ruta"
+# Definir la carpeta destino global (ej: D:\UnidadD_limpio o seleccionada por el usuario)
+$padreOrigen = Split-Path $sourceFull -Parent
+$nombreUnidad = (Get-Item -LiteralPath $sourceFull).Name
+if ([string]::IsNullOrWhiteSpace($nombreUnidad)) { $nombreUnidad = "Raiz_" + $sourceFull.Substring(0,1) }
+$sugerenciaDestino = Join-Path $padreOrigen ($nombreUnidad + "_limpio")
 
+Write-Host "Carpeta de destino general sugerida: $sugerenciaDestino" -ForegroundColor Yellow
+$customDestino = Read-Host "Presione ENTER para usar esta sugerencia o escriba otra ruta para el destino"
 $carpetaDestino = if ([string]::IsNullOrWhiteSpace($customDestino)) { $sugerenciaDestino } else { $customDestino }
 
 New-Item -ItemType Directory -Force -Path $carpetaDestino | Out-Null
@@ -30,14 +33,12 @@ $worker = Join-Path $PSScriptRoot "_worker.ps1"
 if (-not (Test-Path -LiteralPath $worker)) { throw "Falta el archivo _worker.ps1 junto a este script principal." }
 
 Get-Process WINWORD -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-ChildItem -LiteralPath $carpetaOrigen -Recurse -File |
-    Where-Object { $extensiones -contains $_.Extension.ToLower() } |
-    Unblock-File -ErrorAction SilentlyContinue
+Write-Host "`nBuscando archivos compatibles en $sourceFull (esto puede tardar dependiendo del tamaño)..." -ForegroundColor Cyan
 
-$archivos = Get-ChildItem -LiteralPath $carpetaOrigen -Recurse -File |
-            Where-Object { $extensiones -contains $_.Extension.ToLower() }
+$archivos = Get-ChildItem -LiteralPath $sourceFull -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $extensiones -contains $_.Extension.ToLower() -and $_.FullName -notlike "$carpetaDestino*" }
 
-Write-Host "`nArchivos encontrados: $($archivos.Count) | Timeout por archivo: ${timeoutSeg}s`n" -ForegroundColor Cyan
+Write-Host "Archivos encontrados para limpiar: $($archivos.Count) | Timeout por archivo: ${timeoutSeg}s`n" -ForegroundColor Cyan
 
 $resultados = @()
 $n = 0
@@ -48,16 +49,10 @@ foreach ($a in $archivos) {
 
     $src = $a.FullName
     
-    # Mantener la estructura de subcarpetas en el destino si existen
-    $relPath = $src.Substring((Get-Item -LiteralPath $carpetaOrigen).FullName.Length)
+    # Calcular la ruta relativa respecto a la unidad origen para replicar carpetas limpias
+    $relPath = $src.Substring($sourceFull.Length)
     $dst = Join-Path $carpetaDestino $relPath
     $dst = [System.IO.Path]::ChangeExtension($dst, ".docx")
-
-    if ($src -ieq $dst) {
-        $dir  = [System.IO.Path]::GetDirectoryName($src)
-        $base = [System.IO.Path]::GetFileNameWithoutExtension($src)
-        $dst  = Join-Path $dir ($base + "_limpio.docx")
-    }
 
     # Asegurar que la subcarpeta de destino exista
     New-Item -ItemType Directory -Force -Path ([System.IO.Path]::GetDirectoryName($dst)) | Out-Null
@@ -79,7 +74,7 @@ foreach ($a in $archivos) {
         try { $p.Kill() } catch {}
         Get-Process WINWORD -ErrorAction SilentlyContinue | Stop-Process -Force
         Write-Host "    TIMEOUT (${timeoutSeg}s)" -ForegroundColor Yellow
-        $resultados += [pscustomobject]@{ Archivo=$a.Name; Estado="TIMEOUT"; Detalle="" }
+        $resultados += [pscustomobject]@{ Archivo=$a.Name; Estado="TIMEOUT"; Detalle=$src }
     }
     elseif ($out -match "OK") {
         Write-Host "    GUARDADO: $dst" -ForegroundColor Green
